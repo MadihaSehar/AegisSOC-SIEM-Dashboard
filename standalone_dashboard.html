@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AegisSOC - SIEM Threat Monitoring & Incident Response</title>
+  
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', 'sans-serif'],
+            mono: ['JetBrains Mono', 'monospace'],
+          }
+        }
+      }
+    }
+  </script>
+
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+
+  <!-- React & Babel CDNs -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+
+  <style>
+    body {
+      background-color: #070a12;
+      color: #e2e8f0;
+      font-family: 'Inter', sans-serif;
+    }
+    .glass-panel {
+      background: rgba(14, 20, 36, 0.75);
+      backdrop-filter: blur(12px);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+    }
+    .glow-cyan { box-shadow: 0 0 15px rgba(6, 182, 212, 0.35); }
+    .glow-red { box-shadow: 0 0 15px rgba(239, 68, 68, 0.4); }
+    .glow-green { box-shadow: 0 0 15px rgba(16, 185, 129, 0.35); }
+  </style>
+</head>
+<body class="bg-[#070a12] text-slate-100 antialiased selection:bg-cyan-500 selection:text-black">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect } = React;
+
+    const MOCK_EVENTS = [
+      { id: 4624, provider: "Security", severity: "INFORMATIONAL", category: "Logon", message: "An account was successfully logged on (User: madih)", user: "madih", process: "svchost.exe", mitre_id: "T1078", hostname: "DESKTOP-SOC-01", ip: "192.168.1.15" },
+      { id: 4625, provider: "Security", severity: "HIGH", category: "Logon Failure", message: "An account failed to log on (User: Administrator)", user: "Administrator", process: "lsass.exe", mitre_id: "T1110", hostname: "DESKTOP-SOC-01", ip: "192.168.1.108" },
+      { id: 4688, provider: "Security", severity: "MEDIUM", category: "Process Creation", message: "New process created: cmd.exe /c powershell -nop -w hidden", user: "SYSTEM", process: "cmd.exe", mitre_id: "T1059", hostname: "DESKTOP-SOC-01", ip: "192.168.1.15" },
+      { id: 4688, provider: "Security", severity: "CRITICAL", category: "Process Creation", message: "powershell.exe -Enc SQBFA... [Obfuscated C2 Stager]", user: "SYSTEM", process: "powershell.exe", mitre_id: "T1059.001", hostname: "DESKTOP-SOC-01", ip: "192.168.1.15" },
+      { id: 5156, provider: "Filtering Platform", severity: "INFORMATIONAL", category: "Network", message: "WFP allowed outbound connection to 142.250.190.46:443", user: "madih", process: "chrome.exe", mitre_id: "T1071", hostname: "DESKTOP-SOC-01", ip: "192.168.1.15" },
+      { id: 1102, provider: "Security", severity: "HIGH", category: "Audit Log Cleared", message: "The security audit log was cleared by Administrator", user: "Administrator", process: "eventvwr.exe", mitre_id: "T1070.001", hostname: "DESKTOP-SOC-01", ip: "192.168.1.15" }
+    ];
+
+    function Dashboard() {
+      const [tab, setTab] = useState('overview');
+      const [logs, setLogs] = useState(MOCK_EVENTS);
+      const [eps, setEps] = useState(210);
+      const [cpu, setCpu] = useState(24);
+      const [mem, setMem] = useState(54);
+      const [incidents, setIncidents] = useState([
+        { id: "INC-8942", title: "Possible PowerShell Encoded Execution", severity: "CRITICAL", mitre_id: "T1059.001", user: "SYSTEM", status: "NEW", desc: "powershell.exe executed with -EncodedCommand flag pointing to C2 script." },
+        { id: "INC-8941", title: "Multiple Failed RDP Logon Attempts (Brute Force)", severity: "HIGH", mitre_id: "T1110.001", user: "Administrator", status: "IN_PROGRESS", desc: "15 failed logon events detected in 60s from IP 192.168.1.108." }
+      ]);
+      const [search, setSearch] = useState('');
+      const [selectedLog, setSelectedLog] = useState(null);
+
+      useEffect(() => {
+        const interval = setInterval(() => {
+          setEps(Math.floor(Math.random() * 100) + 180);
+          setCpu(Math.floor(Math.random() * 20) + 15);
+          setMem(Math.floor(Math.random() * 5) + 50);
+
+          const raw = MOCK_EVENTS[Math.floor(Math.random() * MOCK_EVENTS.length)];
+          const newEvt = {
+            ...raw,
+            timestamp: new Date().toLocaleTimeString(),
+            ip: `192.168.1.${Math.floor(Math.random() * 150) + 10}`
+          };
+          setLogs(prev => [newEvt, ...prev].slice(0, 200));
+        }, 1500);
+
+        return () => clearInterval(interval);
+      }, []);
+
+      const filteredLogs = logs.filter(l => 
+        !search || l.message.toLowerCase().includes(search.toLowerCase()) || String(l.id).includes(search) || l.user.toLowerCase().includes(search.toLowerCase())
+      );
+
+      return (
+        <div className="min-h-screen flex flex-col">
+          {/* Header */}
+          <header className="bg-[#080d1a]/90 backdrop-blur-md border-b border-white/10 px-6 py-3 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-center text-cyan-400 font-bold text-xl glow-cyan">
+                🛡️
+              </div>
+              <div>
+                <h1 className="font-bold text-lg text-white font-mono">AEGIS<span className="text-cyan-400">SOC</span> SIEM</h1>
+                <p className="text-xs text-slate-400 font-mono">Host: DESKTOP-SOC-01 | Target PC Monitoring</p>
+              </div>
+            </div>
+
+            <nav className="flex items-center gap-2 font-mono text-xs">
+              {['overview', 'logs', 'mitre', 'incidents', 'endpoint'].map(t => (
+                <button
+                  key={t}
+                  onClick={() => setTab(t)}
+                  className={`px-3 py-1.5 rounded-lg uppercase tracking-wider transition-all ${
+                    tab === t ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/40 glow-cyan font-bold' : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  {t}
+                </button>
+              ))}
+            </nav>
+
+            <div className="flex items-center gap-2 px-3 py-1.5 rounded bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs font-mono">
+              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
+              REAL-TIME THREAT MONITOR ACTIVE
+            </div>
+          </header>
+
+          {/* Content */}
+          <main className="flex-1 p-6 max-w-7xl mx-auto w-full space-y-6">
+            {tab === 'overview' && (
+              <div className="space-y-6">
+                {/* Cards */}
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-4 font-mono">
+                  <div className="glass-panel p-5 rounded-xl">
+                    <p className="text-xs text-slate-400 uppercase">Security Posture</p>
+                    <p className="text-3xl font-bold text-emerald-400 mt-1">88%</p>
+                    <p className="text-[10px] text-slate-500 mt-2">OPSEC NORMAL</p>
+                  </div>
+                  <div className="glass-panel p-5 rounded-xl">
+                    <p className="text-xs text-slate-400 uppercase">Ingest Velocity</p>
+                    <p className="text-3xl font-bold text-cyan-400 mt-1">{eps} <span className="text-xs font-normal">EPS</span></p>
+                    <p className="text-[10px] text-cyan-400/80 mt-2">Real-time Windows Event Bus</p>
+                  </div>
+                  <div className="glass-panel p-5 rounded-xl">
+                    <p className="text-xs text-slate-400 uppercase">Active Incidents</p>
+                    <p className="text-3xl font-bold text-rose-500 mt-1">{incidents.length}</p>
+                    <p className="text-[10px] text-rose-400 mt-2">Requires Triage Action</p>
+                  </div>
+                  <div className="glass-panel p-5 rounded-xl">
+                    <p className="text-xs text-slate-400 uppercase">Host Telemetry</p>
+                    <p className="text-lg font-bold text-slate-200 mt-1">CPU: <span className="text-cyan-400">{cpu}%</span> | RAM: <span className="text-purple-400">{mem}%</span></p>
+                    <p className="text-[10px] text-slate-500 mt-2">188 Active Processes</p>
+                  </div>
+                </div>
+
+                {/* Ticker */}
+                <div className="glass-panel p-5 rounded-xl space-y-3 font-mono text-xs">
+                  <h3 className="font-bold text-slate-100 flex items-center justify-between">
+                    <span>⚡ Real-Time Ingested Log Stream</span>
+                    <span className="text-cyan-400 font-normal">Auto-refresh active</span>
+                  </h3>
+                  <div className="space-y-2">
+                    {logs.slice(0, 6).map((evt, i) => (
+                      <div key={i} className="p-3 rounded bg-slate-900/80 border border-white/5 flex items-center justify-between">
+                        <div className="flex items-center gap-3">
+                          <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                            evt.severity === 'CRITICAL' ? 'bg-rose-500/20 text-rose-400 border border-rose-500/40' :
+                            evt.severity === 'HIGH' ? 'bg-amber-500/20 text-amber-400 border border-amber-500/40' :
+                            'bg-cyan-500/20 text-cyan-400'
+                          }`}>{evt.severity}</span>
+                          <span className="text-slate-400">{evt.timestamp}</span>
+                          <span className="text-cyan-400 font-bold">Event ID: {evt.id}</span>
+                          <span className="text-slate-200 truncate max-w-md">{evt.message}</span>
+                        </div>
+                        <span className="px-2 py-0.5 rounded bg-purple-500/20 text-purple-300 border border-purple-500/30 text-[10px]">{evt.mitre_id}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {tab === 'logs' && (
+              <div className="space-y-4 font-mono text-xs">
+                <div className="glass-panel p-4 rounded-xl flex items-center justify-between">
+                  <input 
+                    type="text" 
+                    placeholder="Search logs e.g. 4625, powershell..." 
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                    className="bg-slate-900 border border-white/10 px-4 py-2 rounded-lg text-slate-200 w-96 focus:outline-none focus:border-cyan-500"
+                  />
+                  <span className="text-slate-400">Showing {filteredLogs.length} events</span>
+                </div>
+
+                <div className="glass-panel rounded-xl overflow-hidden">
+                  <table className="w-full text-left">
+                    <thead className="bg-slate-900 text-slate-400 uppercase text-[10px]">
+                      <tr>
+                        <th className="p-3">Time</th>
+                        <th className="p-3">Severity</th>
+                        <th className="p-3">Event ID</th>
+                        <th className="p-3">User</th>
+                        <th className="p-3">Process</th>
+                        <th className="p-3">Message Payload</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-white/5">
+                      {filteredLogs.map((l, idx) => (
+                        <tr key={idx} onClick={() => setSelectedLog(l)} className="hover:bg-cyan-500/10 cursor-pointer">
+                          <td className="p-3 text-slate-400">{l.timestamp}</td>
+                          <td className="p-3">
+                            <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                              l.severity === 'CRITICAL' ? 'bg-rose-500/20 text-rose-400' : 'bg-cyan-500/20 text-cyan-400'
+                            }`}>{l.severity}</span>
+                          </td>
+                          <td className="p-3 text-cyan-400 font-bold">{l.id}</td>
+                          <td className="p-3">{l.user}</td>
+                          <td className="p-3 text-purple-400">{l.process}</td>
+                          <td className="p-3 truncate max-w-sm">{l.message}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {tab === 'mitre' && (
+              <div className="glass-panel p-6 rounded-xl space-y-4 font-mono">
+                <h3 className="font-bold text-lg text-slate-100">MITRE ATT&CK Enterprise Matrix</h3>
+                <div className="grid grid-cols-3 gap-4 text-xs">
+                  <div className="p-4 rounded bg-slate-900 border border-white/10">
+                    <h4 className="text-cyan-400 font-bold mb-2">TA0002 Execution</h4>
+                    <p className="p-2 rounded bg-rose-500/20 border border-rose-500/40 text-rose-300">T1059.001 PowerShell (Critical Alert)</p>
+                  </div>
+                  <div className="p-4 rounded bg-slate-900 border border-white/10">
+                    <h4 className="text-cyan-400 font-bold mb-2">TA0006 Credential Access</h4>
+                    <p className="p-2 rounded bg-amber-500/20 border border-amber-500/40 text-amber-300">T1110.001 Password Guessing (Active Threat)</p>
+                  </div>
+                  <div className="p-4 rounded bg-slate-900 border border-white/10">
+                    <h4 className="text-cyan-400 font-bold mb-2">TA0005 Defense Evasion</h4>
+                    <p className="p-2 rounded bg-cyan-500/20 border border-cyan-500/40 text-cyan-300">T1070.001 Clear Event Logs (Monitored)</p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {tab === 'incidents' && (
+              <div className="space-y-4 font-mono text-xs">
+                {incidents.map((inc) => (
+                  <div key={inc.id} className="glass-panel p-5 rounded-xl border border-rose-500/40 flex justify-between items-center">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="font-bold text-rose-400">{inc.id}</span>
+                        <span className="px-2 py-0.5 rounded bg-rose-500/20 text-rose-300">{inc.severity}</span>
+                        <span className="text-purple-400">{inc.mitre_id}</span>
+                      </div>
+                      <h4 className="font-bold text-slate-100 text-sm mt-1">{inc.title}</h4>
+                      <p className="text-slate-400 mt-1">{inc.desc}</p>
+                    </div>
+                    <button 
+                      onClick={() => alert(`Host ISOLATED for ${inc.id}`)}
+                      className="px-4 py-2 rounded bg-rose-500/20 hover:bg-rose-500/30 text-rose-400 border border-rose-500/40 font-bold"
+                    >
+                      Isolate Host PC
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {tab === 'endpoint' && (
+              <div className="glass-panel p-6 rounded-xl space-y-4 font-mono text-xs">
+                <h3 className="font-bold text-base text-slate-100">Host Endpoint Diagnostics (DESKTOP-SOC-01)</h3>
+                <div className="p-4 rounded bg-slate-900 border border-white/10 space-y-2">
+                  <p className="text-cyan-400 font-bold">Active Process: powershell.exe (PID 4120)</p>
+                  <p className="text-slate-300">Path: C:\Windows\System32\powershell.exe -Enc SQBFA...</p>
+                  <button onClick={() => alert('PID 4120 terminated')} className="px-3 py-1 bg-rose-500/20 text-rose-400 border border-rose-500/40 rounded">
+                    Kill Process
+                  </button>
+                </div>
+              </div>
+            )}
+          </main>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<Dashboard />);
+  </script>
+</body>
+</html>
