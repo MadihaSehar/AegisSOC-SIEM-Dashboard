@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AegisSOC - Multi-Node Distributed SIEM & Threat Intelligence</title>
+  
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', 'sans-serif'],
+            mono: ['JetBrains Mono', 'monospace'],
+          }
+        }
+      }
+    }
+  </script>
+
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+
+  <!-- React & Babel CDNs -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <style>
+    body {
+      background-color: #050811;
+      color: #e2e8f0;
+      font-family: 'Inter', sans-serif;
+    }
+    .glass-panel {
+      background: rgba(13, 19, 36, 0.75);
+      backdrop-filter: blur(12px);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+    }
+    .glow-cyan { box-shadow: 0 0 15px rgba(6, 182, 212, 0.35); }
+    .glow-red { box-shadow: 0 0 15px rgba(239, 68, 68, 0.4); }
+    .glow-green { box-shadow: 0 0 15px rgba(16, 185, 129, 0.35); }
+  </style>
+</head>
+<body class="bg-[#050811] text-slate-100 antialiased selection:bg-cyan-500 selection:text-black">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useMemo } = React;
+
+    const DEFAULT_FLEET = [
+      { id: "AGENT-DESKTOP-SOC-01", hostname: "DESKTOP-SOC-01", ip: "192.168.1.15", os: "Win11 Pro", status: "ONLINE", events: 412 },
+      { id: "AGENT-LAPTOP-OFFICE-02", hostname: "LAPTOP-OFFICE-02", ip: "192.168.1.108", os: "Win10 Ent", status: "ONLINE", events: 289 },
+      { id: "AGENT-SERVER-PROD-03", hostname: "SERVER-PROD-03", ip: "192.168.1.200", os: "Ubuntu Server", status: "ONLINE", events: 890 }
+    ];
+
+    const MOCK_EVENTS = [
+      { id: 4624, provider: "Security", severity: "INFORMATIONAL", category: "Logon", message: "Account logged on successfully", user: "madih", process: "svchost.exe", mitre_id: "T1078", hostname: "DESKTOP-SOC-01", ip: "192.168.1.15" },
+      { id: 4625, provider: "Security", severity: "HIGH", category: "Logon Failure", message: "Failed RDP logon attempt via remote IP 192.168.1.108", user: "Administrator", process: "lsass.exe", mitre_id: "T1110", hostname: "LAPTOP-OFFICE-02", ip: "192.168.1.108" },
+      { id: 4688, provider: "Security", severity: "CRITICAL", category: "Process Creation", message: "powershell.exe -Enc SQBFA... [Obfuscated C2 Stager]", user: "SYSTEM", process: "powershell.exe", mitre_id: "T1059.001", hostname: "DESKTOP-SOC-01", ip: "192.168.1.15" },
+      { id: 5156, provider: "Filtering", severity: "INFORMATIONAL", category: "Network", message: "Outbound socket connection allowed to 142.250.190.46:443", user: "madih", process: "chrome.exe", mitre_id: "T1071", hostname: "SERVER-PROD-03", ip: "192.168.1.200" }
+    ];
+
+    function Dashboard() {
+      const [tab, setTab] = useState('overview');
+      const [selectedNode, setSelectedNode] = useState('ALL');
+      const [registeredFleet, setRegisteredFleet] = useState(DEFAULT_FLEET);
+      const [logs, setLogs] = useState(MOCK_EVENTS);
+      const [eps, setEps] = useState(315);
+      const [cpu, setCpu] = useState(31);
+      const [mem, setMem] = useState(52);
+      const [isLiveApi, setIsLiveApi] = useState(false);
+      const [incidents, setIncidents] = useState([
+        { id: "INC-8942", title: "Possible PowerShell Encoded Execution", severity: "CRITICAL", mitre_id: "T1059.001", hostname: "DESKTOP-SOC-01", user: "SYSTEM", status: "NEW", desc: "powershell.exe executed with -EncodedCommand flag pointing to C2 stager." },
+        { id: "INC-8941", title: "Lateral Movement & Multi-Node Brute Force", severity: "HIGH", mitre_id: "T1110.001", hostname: "LAPTOP-OFFICE-02", user: "Administrator", status: "IN_PROGRESS", desc: "Failed RDP logons detected hopping between LAPTOP-OFFICE-02 and DESKTOP-SOC-01." }
+      ]);
+      const [search, setSearch] = useState('');
+      const [selectedLog, setSelectedLog] = useState(null);
+
+      // Fetch dynamic fleet nodes from FastAPI server
+      const fetchFleetNodes = async () => {
+        try {
+          const res = await fetch('/api/fleet/nodes');
+          if (res.ok) {
+            const data = await res.json();
+            if (data && data.length > 0) {
+              setRegisteredFleet(prev => {
+                const combined = [...data];
+                DEFAULT_FLEET.forEach(d => {
+                  if (!combined.some(c => c.hostname === d.hostname)) {
+                    combined.push(d);
+                  }
+                });
+                return combined;
+              });
+              setIsLiveApi(true);
+            }
+          }
+        } catch (e) {}
+      };
+
+      useEffect(() => {
+        fetchFleetNodes();
+        const pollInterval = setInterval(fetchFleetNodes, 2500);
+
+        return () => {
+          clearInterval(pollInterval);
+        };
+      }, []);
+
+      const allHostnames = useMemo(() => {
+        const set = new Set();
+        registeredFleet.forEach(n => {
+          const clean = n.hostname.replace('AGENT-', '');
+          set.add(clean);
+        });
+        logs.forEach(l => {
+          if (l.hostname) {
+            const clean = l.hostname.replace('AGENT-', '');
+            set.add(clean);
+          }
+        });
+        return Array.from(set);
+      }, [registeredFleet, logs]);
+
+      const filteredLogs = logs.filter(l => {
+        let matchesNode = true;
+        if (selectedNode !== 'ALL') {
+          const lHost = (l.hostname || '').toLowerCase().replace('agent-', '');
+          const sHost = selectedNode.toLowerCase().replace('agent-', '');
+          matchesNode = lHost.includes(sHost) || sHost.includes(lHost);
+        }
+
+        const q = search.toLowerCase();
+        const matchesSearch = !q || l.message.toLowerCase().includes(q) || String(l.id || l.event_id).includes(q) || l.user.toLowerCase().includes(q) || (l.hostname && l.hostname.toLowerCase().includes(q));
+        return matchesNode && matchesSearch;
+      });
+
+      return (
+        <div className="min-h-screen flex flex-col font-sans">
+          
+          {/* Top Navbar */}
+          <header className="bg-[#080d1a]/95 backdrop-blur-md border-b border-white/10 px-6 py-3 flex flex-wrap items-center justify-between gap-4">
+            
+            {/* Logo & Node Switcher */}
+            <div className="flex items-center gap-4">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-center text-cyan-400 font-bold text-xl glow-cyan">
+                  🛡️
+                </div>
+                <div>
+                  <h1 className="font-bold text-lg text-white font-mono tracking-wider">AEGIS<span className="text-cyan-400">SOC</span> <span className="text-xs text-purple-400 font-normal">MULTI-NODE v2.0</span></h1>
+                  <p className="text-xs text-slate-400 font-mono">Distributed Threat Monitoring Engine</p>
+                </div>
+              </div>
+
+              {/* Clean Professional Fleet Node Switcher Dropdown */}
+              <div className="flex items-center gap-2 bg-slate-900/90 border border-cyan-500/30 px-3 py-1.5 rounded-lg text-xs font-mono">
+                <span className="text-slate-400">Target Node:</span>
+                <select 
+                  value={selectedNode}
+                  onChange={(e) => setSelectedNode(e.target.value)}
+                  className="bg-transparent text-cyan-400 font-bold focus:outline-none cursor-pointer"
+                >
+                  <option value="ALL" className="bg-slate-900 text-slate-100">[ ALL FLEET NODES ] ({allHostnames.length} Active)</option>
+                  {allHostnames.map((hname) => (
+                    <option key={hname} value={hname} className="bg-slate-900 text-cyan-400 font-bold">
+                      {hname}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            {/* Navigation Tabs */}
+            <nav className="flex items-center gap-1 font-mono text-xs">
+              {['overview', 'logs', 'fleet', 'mitre', 'incidents'].map(t => (
+                <button
+                  key={t}
+                  onClick={() => setTab(t)}
+                  className={`px-3 py-1.5 rounded-lg uppercase tracking-wider transition-all ${
+                    tab === t ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/40 glow-cyan font-bold' : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  {t}
+                </button>
+              ))}
+            </nav>
+
+            <div className="flex items-center gap-2 px-3 py-1.5 rounded text-xs font-mono border bg-emerald-500/10 text-emerald-400 border-emerald-500/30">
+              <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-ping"></span>
+              <span>{allHostnames.length} FLEET NODES ACTIVE</span>
+            </div>
+          </header>
+
+          {/* Main Content Area */}
+          <main className="flex-1 p-6 max-w-7xl mx-auto w-full space-y-6">
+            
+            {/* OVERVIEW TAB */}
+            {tab === 'overview' && (
+              <div className="space-y-6">
+                
+                {/* Lateral Movement Warning Banner */}
+                <div className="p-4 rounded-xl bg-rose-500/15 border border-rose-500/40 text-rose-300 font-mono text-xs flex items-center justify-between glow-red">
+                  <div className="flex items-center gap-3">
+                    <span className="p-2 rounded-lg bg-rose-500/20 text-rose-400 font-bold">⚠️ LATERAL MOVEMENT DETECTED</span>
+                    <span>Suspicious logons detected hopping across remote fleet nodes (WIN-RJCSG0BSFFA & LAPTOP-OFFICE-02).</span>
+                  </div>
+                  <button onClick={() => setTab('incidents')} className="px-3 py-1 bg-rose-500 text-black font-bold rounded hover:bg-rose-400">
+                    Triage Incident
+                  </button>
+                </div>
+
+                {/* Top Metrics Cards */}
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-4 font-mono">
+                  <div className="glass-panel p-5 rounded-xl">
+                    <p className="text-xs text-slate-400 uppercase">Fleet Health Score</p>
+                    <p className="text-3xl font-bold text-emerald-400 mt-1">88%</p>
+                    <p className="text-[10px] text-slate-500 mt-2">{allHostnames.length} Active Nodes Monitored</p>
+                  </div>
+                  <div className="glass-panel p-5 rounded-xl">
+                    <p className="text-xs text-slate-400 uppercase">Combined Ingest Velocity</p>
+                    <p className="text-3xl font-bold text-cyan-400 mt-1">{eps} <span className="text-xs font-normal">EPS</span></p>
+                    <p className="text-[10px] text-cyan-400/80 mt-2">Distributed WebSockets Stream</p>
+                  </div>
+                  <div className="glass-panel p-5 rounded-xl">
+                    <p className="text-xs text-slate-400 uppercase">Active Fleet Incidents</p>
+                    <p className="text-3xl font-bold text-rose-500 mt-1">{incidents.length}</p>
+                    <p className="text-[10px] text-rose-400 mt-2">Requires Analyst Action</p>
+                  </div>
+                  <div className="glass-panel p-5 rounded-xl">
+                    <p className="text-xs text-slate-400 uppercase">Primary Host Workload</p>
+                    <p className="text-lg font-bold text-slate-200 mt-1">CPU: <span className="text-cyan-400">{cpu}%</span> | RAM: <span className="text-purple-400">{mem}%</span></p>
+                    <p className="text-[10px] text-slate-500 mt-2">Host psutil Collector</p>
+                  </div>
+                </div>
+
+                {/* Real-time Multi-Node Log Stream Ticker */}
+                <div className="glass-panel p-5 rounded-xl space-y-3 font-mono text-xs">
+                  <div className="flex items-center justify-between">
+                    <h3 className="font-bold text-slate-100 flex items-center gap-2">
+                      <span>⚡ Multi-Node Live Ingest Stream</span>
+                      <span className="text-xs text-cyan-400 font-normal">Active Filter: [{selectedNode}]</span>
+                    </h3>
+                    <button onClick={() => setTab('logs')} className="text-cyan-400 hover:underline">
+                      Open Log Workbench ➔
+                    </button>
+                  </div>
+
+                  <div className="space-y-2">
+                    {filteredLogs.slice(0, 7).map((evt, i) => (
+                      <div key={i} className="p-3 rounded bg-slate-900/80 border border-white/5 flex items-center justify-between gap-3">
+                        <div className="flex items-center gap-3">
+                          <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                            evt.severity === 'CRITICAL' ? 'bg-rose-500/20 text-rose-400 border border-rose-500/40' :
+                            evt.severity === 'HIGH' ? 'bg-amber-500/20 text-amber-400 border border-amber-500/40' :
+                            'bg-cyan-500/20 text-cyan-400'
+                          }`}>{evt.severity}</span>
+                          <span className="text-slate-400">{evt.timestamp}</span>
+                          <span className="text-slate-100 font-bold px-2 py-0.5 rounded bg-slate-800 border border-white/10">
+                            {evt.hostname}
+                          </span>
+                          <span className="text-cyan-400 font-bold">Event ID: {evt.id || evt.event_id}</span>
+                          <span className="text-slate-300 truncate max-w-sm hidden md:inline">{evt.message}</span>
+                        </div>
+                        <span className="px-2 py-0.5 rounded bg-purple-500/20 text-purple-300 border border-purple-500/30 text-[10px]">{evt.mitre_id}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* FLEET MANAGEMENT TAB */}
+            {tab === 'fleet' && (
+              <div className="space-y-6 font-mono text-xs">
+                <div className="glass-panel p-5 rounded-xl flex items-center justify-between">
+                  <div>
+                    <h3 className="font-bold text-base text-slate-100 mb-1">Registered Multi-Node Remote Forwarder Fleet</h3>
+                    <p className="text-slate-400 text-xs">Manage all remote PCs streaming Windows Security Event Logs to this central SIEM collector.</p>
+                  </div>
+                  <button onClick={fetchFleetNodes} className="px-3 py-1.5 bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 rounded">
+                    🔄 Refresh Fleet List
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                  {allHostnames.map((hname, i) => (
+                    <div key={i} className="glass-panel p-5 rounded-xl border border-cyan-500/30 space-y-4">
+                      <div className="flex items-center justify-between">
+                        <span className="font-bold text-cyan-400 text-sm flex items-center gap-2">
+                          {hname}
+                        </span>
+                        <span className="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 font-bold text-[10px]">
+                          ● ONLINE
+                        </span>
+                      </div>
+
+                      <div className="space-y-1 text-slate-300">
+                        <div>Agent ID: <strong className="text-slate-100">AGENT-{hname}</strong></div>
+                        <div>IP Address: <strong className="text-cyan-300">192.168.0.181</strong></div>
+                        <div>Operating System: <span className="text-purple-300">Win10/11 Pro</span></div>
+                        <div>Ingested Logs: <span className="text-emerald-400 font-bold">Active Streaming</span></div>
+                      </div>
+
+                      <div className="pt-3 border-t border-white/10 flex items-center justify-between">
+                        <button 
+                          onClick={() => { setSelectedNode(hname); setTab('logs'); }}
+                          className="px-3 py-1.5 rounded bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-400 border border-cyan-500/30 text-xs"
+                        >
+                          View Logs
+                        </button>
+                        <button 
+                          onClick={() => alert(`Agent Ping sent to ${hname}`)}
+                          className="px-3 py-1.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs"
+                        >
+                          Ping Agent
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* LOGS WORKBENCH TAB */}
+            {tab === 'logs' && (
+              <div className="space-y-4 font-mono text-xs">
+                <div className="glass-panel p-4 rounded-xl flex flex-col md:flex-row items-center justify-between gap-4">
+                  <input 
+                    type="text" 
+                    placeholder="Search logs e.g. 4625, powershell, WIN-RJCSG0BSFFA..." 
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                    className="bg-slate-900 border border-white/10 px-4 py-2 rounded-lg text-slate-200 w-full md:w-96 focus:outline-none focus:border-cyan-500"
+                  />
+                  <div className="flex items-center gap-3">
+                    <span className="text-slate-400">Filter Node: <strong className="text-cyan-400">{selectedNode}</strong></span>
+                    <span className="text-slate-400">Showing {filteredLogs.length} events</span>
+                  </div>
+                </div>
+
+                <div className="glass-panel rounded-xl overflow-hidden">
+                  <table className="w-full text-left">
+                    <thead className="bg-slate-900 text-slate-400 uppercase text-[10px]">
+                      <tr>
+                        <th className="p-3">Time</th>
+                        <th className="p-3">Host Node</th>
+                        <th className="p-3">Severity</th>
+                        <th className="p-3">Event ID</th>
+                        <th className="p-3">User</th>
+                        <th className="p-3">Process</th>
+                        <th className="p-3">Message Payload</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-white/5">
+                      {filteredLogs.map((l, idx) => (
+                        <tr key={idx} onClick={() => setSelectedLog(l)} className="hover:bg-cyan-500/10 cursor-pointer">
+                          <td className="p-3 text-slate-400">{l.timestamp}</td>
+                          <td className="p-3 font-bold text-slate-200">{l.hostname}</td>
+                          <td className="p-3">
+                            <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                              l.severity === 'CRITICAL' ? 'bg-rose-500/20 text-rose-400' : 'bg-cyan-500/20 text-cyan-400'
+                            }`}>{l.severity}</span>
+                          </td>
+                          <td className="p-3 text-cyan-400 font-bold">{l.id || l.event_id}</td>
+                          <td className="p-3">{l.user}</td>
+                          <td className="p-3 text-purple-400">{l.process}</td>
+                          <td className="p-3 truncate max-w-sm">{l.message}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* MITRE MATRIX TAB */}
+            {tab === 'mitre' && (
+              <div className="glass-panel p-6 rounded-xl space-y-4 font-mono">
+                <h3 className="font-bold text-lg text-slate-100">MITRE ATT&CK Multi-Node Matrix</h3>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
+                  <div className="p-4 rounded bg-slate-900 border border-white/10">
+                    <h4 className="text-cyan-400 font-bold mb-2">TA0002 Execution</h4>
+                    <p className="p-2.5 rounded bg-rose-500/20 border border-rose-500/40 text-rose-300">T1059.001 PowerShell Execution (WIN-RJCSG0BSFFA)</p>
+                  </div>
+                  <div className="p-4 rounded bg-slate-900 border border-white/10">
+                    <h4 className="text-cyan-400 font-bold mb-2">TA0006 Credential Access</h4>
+                    <p className="p-2.5 rounded bg-amber-500/20 border border-amber-500/40 text-amber-300">T1110.001 Brute Force (LAPTOP-OFFICE-02)</p>
+                  </div>
+                  <div className="p-4 rounded bg-slate-900 border border-white/10">
+                    <h4 className="text-cyan-400 font-bold mb-2">TA0005 Defense Evasion</h4>
+                    <p className="p-2.5 rounded bg-cyan-500/20 border border-cyan-500/40 text-cyan-300">T1070.001 Clear Event Logs (WIN-RJCSG0BSFFA)</p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* INCIDENTS TAB */}
+            {tab === 'incidents' && (
+              <div className="space-y-4 font-mono text-xs">
+                {incidents.map((inc) => (
+                  <div key={inc.id} className="glass-panel p-5 rounded-xl border border-rose-500/40 flex justify-between items-center">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="font-bold text-rose-400">{inc.id}</span>
+                        <span className="px-2 py-0.5 rounded bg-rose-500/20 text-rose-300">{inc.severity}</span>
+                        <span className="text-cyan-300">Host: <strong>{inc.hostname}</strong></span>
+                        <span className="text-purple-400">{inc.mitre_id}</span>
+                      </div>
+                      <h4 className="font-bold text-slate-100 text-sm mt-1">{inc.title}</h4>
+                      <p className="text-slate-400 mt-1">{inc.desc}</p>
+                    </div>
+                    <button 
+                      onClick={() => alert(`Remote Host ISOLATED: ${inc.hostname}`)}
+                      className="px-4 py-2 rounded bg-rose-500/20 hover:bg-rose-500/30 text-rose-400 border border-rose-500/40 font-bold shrink-0"
+                    >
+                      Isolate Host {inc.hostname}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+          </main>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<Dashboard />);
+  </script>
+</body>
+</html>
