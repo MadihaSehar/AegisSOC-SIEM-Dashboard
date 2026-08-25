@@ -1,14 +1,22 @@
 {
   "builds": [
     {
-      "src": "backend/server.py",
+      "src": "api/index.py",
       "use": "@vercel/python"
+    },
+    {
+      "src": "standalone_dashboard.html",
+      "use": "@vercel/static"
     }
   ],
   "routes": [
     {
+      "src": "/api/(.*)",
+      "dest": "api/index.py"
+    },
+    {
       "src": "/(.*)",
-      "dest": "backend/server.py"
+      "dest": "standalone_dashboard.html"
     }
   ]
 }
